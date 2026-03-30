@@ -15,16 +15,6 @@ const DEFAULT_STATUS = {
   isError: false
 };
 
-const DEFAULT_BACKEND_STATUS = {
-  loading: true,
-  online: false,
-  ready: false,
-  apiKeyConfigured: false,
-  modelConfigured: false,
-  model: null,
-  message: "正在檢查後端連線..."
-};
-
 export default function App() {
   const recognitionRef = useRef(null);
   const requestCounterRef = useRef(0);
@@ -38,16 +28,11 @@ export default function App() {
   const [liveTranslation, setLiveTranslation] = useState("等待翻譯...");
   const [transcriptHistory, setTranscriptHistory] = useState([]);
   const [translationHistory, setTranslationHistory] = useState([]);
-  const [backendStatus, setBackendStatus] = useState(DEFAULT_BACKEND_STATUS);
 
   const combinedTranscript = useMemo(
     () => [finalizedTranscript, interimTranscript].filter(Boolean).join(" ").trim(),
     [finalizedTranscript, interimTranscript]
   );
-
-  useEffect(() => {
-    checkBackendHealth();
-  }, []);
 
   useEffect(() => {
     if (!SpeechRecognition) {
@@ -167,37 +152,6 @@ export default function App() {
     };
   }, [sourceLanguage, targetLanguage]);
 
-  async function checkBackendHealth() {
-    setBackendStatus(DEFAULT_BACKEND_STATUS);
-
-    try {
-      const response = await fetch("/api/health");
-      const payload = await readJsonSafely(response);
-
-      setBackendStatus({
-        loading: false,
-        online: true,
-        ready: Boolean(payload.ok),
-        apiKeyConfigured: Boolean(payload.apiKeyConfigured),
-        modelConfigured: Boolean(payload.modelConfigured),
-        model: payload.model || null,
-        message: payload.ok
-          ? `後端已連線，模型：${payload.model}`
-          : "後端已連線，但 API key 或模型設定尚未完成。"
-      });
-    } catch (error) {
-      setBackendStatus({
-        loading: false,
-        online: false,
-        ready: false,
-        apiKeyConfigured: false,
-        modelConfigured: false,
-        model: null,
-        message: "無法連到後端，請確認 `npm run dev:server` 是否正在執行。"
-      });
-    }
-  }
-
   function resetSession() {
     requestCounterRef.current = 0;
     setFinalizedTranscript("");
@@ -279,27 +233,6 @@ export default function App() {
       <section className="status-row">
         <div className={`status-pill${status.isError ? " error" : ""}`}>{status.label}</div>
         <div className="status-text">{status.message}</div>
-      </section>
-
-      <section className="backend-status card">
-        <div className="panel-header">
-          <h2>後端狀態</h2>
-          <button type="button" className="secondary-button" onClick={checkBackendHealth}>
-            重新檢查
-          </button>
-        </div>
-        <div className="backend-grid">
-          <div className={`health-chip${backendStatus.online ? " online" : " offline"}`}>
-            {backendStatus.loading ? "檢查中" : backendStatus.online ? "已連線" : "未連線"}
-          </div>
-          <div className={`health-chip${backendStatus.apiKeyConfigured ? " online" : " offline"}`}>
-            API Key {backendStatus.apiKeyConfigured ? "已設定" : "未設定"}
-          </div>
-          <div className={`health-chip${backendStatus.modelConfigured ? " online" : " offline"}`}>
-            Model {backendStatus.modelConfigured ? "已設定" : "未設定"}
-          </div>
-        </div>
-        <p className="backend-message">{backendStatus.message}</p>
       </section>
 
       <section className="panels">
