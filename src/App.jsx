@@ -438,9 +438,7 @@ export default function App() {
       <section className="hero">
         <p className="eyebrow">React Voice Translation</p>
         <h1>語音轉文字，即時翻譯</h1>
-        <p className="intro">
-          這個版本已經整理成 Vite + React 結構，畫面、狀態與 API 邏輯都比較適合往正式專案延伸。
-        </p>
+        
       </section>
 
       <section className="controls card">
