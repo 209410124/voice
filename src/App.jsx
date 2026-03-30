@@ -288,17 +288,7 @@ export default function App() {
             重新檢查
           </button>
         </div>
-        <div className="backend-grid">
-          <div className={`health-chip${backendStatus.online ? " online" : " offline"}`}>
-            {backendStatus.loading ? "檢查中" : backendStatus.online ? "已連線" : "未連線"}
-          </div>
-          <div className={`health-chip${backendStatus.apiKeyConfigured ? " online" : " offline"}`}>
-            API Key {backendStatus.apiKeyConfigured ? "已設定" : "未設定"}
-          </div>
-          <div className={`health-chip${backendStatus.modelConfigured ? " online" : " offline"}`}>
-            Model {backendStatus.modelConfigured ? "已設定" : "未設定"}
-          </div>
-        </div>
+        
         <p className="backend-message">{backendStatus.message}</p>
       </section>
 
