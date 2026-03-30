@@ -1,9 +1,10 @@
 const http = require("http");
 const fs = require("fs");
 const path = require("path");
-const { getHealthStatus, translateText } = require("./lib/openai");
 
 loadEnv(path.join(__dirname, ".env"));
+
+const { getHealthStatus, translateText, evaluateSpeech } = require("./lib/openai");
 
 const PORT = Number(process.env.PORT || 3000);
 const DIST_DIR = path.join(__dirname, "dist");
@@ -24,6 +25,11 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === "POST" && req.url === "/api/translate") {
       await handleTranslate(req, res);
+      return;
+    }
+
+    if (req.method === "POST" && req.url === "/api/evaluate") {
+      await handleEvaluate(req, res);
       return;
     }
 
@@ -52,6 +58,17 @@ async function handleTranslate(req, res) {
     text: typeof body.text === "string" ? body.text : "",
     sourceLanguage: typeof body.sourceLanguage === "string" ? body.sourceLanguage : "auto",
     targetLanguage: typeof body.targetLanguage === "string" ? body.targetLanguage : "en-US"
+  });
+
+  sendJson(res, result.status, result.body);
+}
+
+async function handleEvaluate(req, res) {
+  const body = await readJson(req);
+  const result = await evaluateSpeech({
+    transcript: typeof body.transcript === "string" ? body.transcript : "",
+    sourceLanguage: typeof body.sourceLanguage === "string" ? body.sourceLanguage : "auto",
+    referenceText: typeof body.referenceText === "string" ? body.referenceText : ""
   });
 
   sendJson(res, result.status, result.body);

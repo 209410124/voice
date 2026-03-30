@@ -32,6 +32,10 @@ select {
   font: inherit;
 }
 
+input[type="range"] {
+  width: 100%;
+}
+
 .app-shell {
   width: min(1120px, calc(100% - 32px));
   margin: 0 auto;
@@ -114,6 +118,20 @@ select {
   filter: brightness(1.03);
 }
 
+.utility-button {
+  width: auto;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.75);
+  color: var(--text);
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.utility-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 .primary-button:disabled {
   cursor: not-allowed;
   opacity: 0.5;
@@ -142,6 +160,44 @@ select {
 
 .status-text {
   color: var(--muted);
+}
+
+.speech-panel {
+  padding: 22px;
+  margin-bottom: 18px;
+}
+
+.practice-panel {
+  margin-bottom: 18px;
+}
+
+.practice-hint {
+  margin: 0 0 16px;
+  color: var(--muted);
+  line-height: 1.6;
+}
+
+.practice-block {
+  min-height: 110px;
+}
+
+.speech-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.speech-grid label {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.slider-value {
+  color: var(--text);
+  font-size: 0.95rem;
 }
 
 .panels {
@@ -186,10 +242,21 @@ select {
   background: rgba(47, 117, 103, 0.08);
 }
 
+.action-row {
+  margin-top: 14px;
+}
+
 .history {
   display: grid;
   gap: 10px;
   margin-top: 16px;
+}
+
+.history-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 10px;
+  align-items: start;
 }
 
 .history-item {
@@ -202,7 +269,63 @@ select {
   line-height: 1.6;
 }
 
+.mini-play-button {
+  width: auto;
+  min-width: 72px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.78);
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.evaluation-panel {
+  margin-top: 18px;
+}
+
+.evaluation-grid {
+  display: grid;
+  grid-template-columns: 180px 1fr;
+  gap: 18px;
+  align-items: start;
+}
+
+.score-card {
+  display: grid;
+  gap: 8px;
+  padding: 18px;
+  border-radius: 22px;
+  background: rgba(217, 108, 61, 0.1);
+}
+
+.score-label {
+  color: var(--muted);
+  font-weight: 700;
+}
+
+.score-value {
+  font-size: 3rem;
+  line-height: 1;
+}
+
+.evaluation-list p,
+.tip-item,
+.empty-evaluation {
+  margin: 0 0 12px;
+  color: var(--muted);
+  line-height: 1.7;
+}
+
+.tips-block {
+  grid-column: 1 / -1;
+  padding: 16px 18px;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.6);
+}
+
 @media (max-width: 900px) {
+  .speech-grid,
   .controls,
   .panels {
     grid-template-columns: 1fr;
@@ -215,5 +338,13 @@ select {
 
   h1 {
     line-height: 1.05;
+  }
+
+  .evaluation-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .history-row {
+    grid-template-columns: 1fr;
   }
 }
