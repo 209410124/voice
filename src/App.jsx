@@ -34,6 +34,9 @@ const DEFAULT_SERVER_STATUS = {
   model: null
 };
 
+const MIN_RECORDING_DURATION_MS = 1200;
+const MIN_AUDIO_SIZE_BYTES = 8 * 1024;
+
 function isUsableTranslation(text) {
   return text && !Object.values(PLACEHOLDERS).includes(text);
 }
@@ -51,9 +54,11 @@ export default function App() {
   const recordingRecorderRef = useRef(null);
   const recordingStreamRef = useRef(null);
   const recordingChunksRef = useRef([]);
+  const recordingStartedAtRef = useRef(0);
   const practiceRecorderRef = useRef(null);
   const practiceStreamRef = useRef(null);
   const practiceChunksRef = useRef([]);
+  const practiceStartedAtRef = useRef(0);
   const requestCounterRef = useRef(0);
   const [availableVoices, setAvailableVoices] = useState([]);
 
@@ -235,16 +240,27 @@ export default function App() {
     }
 
     if (isListening) {
-      const audioBlob = await stopCapture({ recorderRef: recordingRecorderRef, streamRef: recordingStreamRef, chunksRef: recordingChunksRef });
+      const capture = await stopCapture({
+        recorderRef: recordingRecorderRef,
+        streamRef: recordingStreamRef,
+        chunksRef: recordingChunksRef,
+        startedAtRef: recordingStartedAtRef
+      });
       setIsListening(false);
-      await processTranslationAudio(audioBlob);
+      await processTranslationAudio(capture);
       return;
     }
 
     resetSession();
 
     try {
-      await startCapture({ recorderRef: recordingRecorderRef, streamRef: recordingStreamRef, chunksRef: recordingChunksRef, setActive: setIsListening });
+      await startCapture({
+        recorderRef: recordingRecorderRef,
+        streamRef: recordingStreamRef,
+        chunksRef: recordingChunksRef,
+        startedAtRef: recordingStartedAtRef,
+        setActive: setIsListening
+      });
       setStatus({
         label: "錄音中",
         message: "請自然說話，結束後按停止送出給 Whisper。",
@@ -274,9 +290,14 @@ export default function App() {
     }
 
     if (isPracticeListening) {
-      const audioBlob = await stopCapture({ recorderRef: practiceRecorderRef, streamRef: practiceStreamRef, chunksRef: practiceChunksRef });
+      const capture = await stopCapture({
+        recorderRef: practiceRecorderRef,
+        streamRef: practiceStreamRef,
+        chunksRef: practiceChunksRef,
+        startedAtRef: practiceStartedAtRef
+      });
       setIsPracticeListening(false);
-      await processPracticeAudio(audioBlob);
+      await processPracticeAudio(capture);
       return;
     }
 
@@ -284,7 +305,13 @@ export default function App() {
     setEvaluation(null);
 
     try {
-      await startCapture({ recorderRef: practiceRecorderRef, streamRef: practiceStreamRef, chunksRef: practiceChunksRef, setActive: setIsPracticeListening });
+      await startCapture({
+        recorderRef: practiceRecorderRef,
+        streamRef: practiceStreamRef,
+        chunksRef: practiceChunksRef,
+        startedAtRef: practiceStartedAtRef,
+        setActive: setIsPracticeListening
+      });
       setStatus({
         label: "跟讀錄音中",
         message: "請跟著翻譯念，停止後會由 Whisper 轉成文字。",
@@ -299,11 +326,23 @@ export default function App() {
     }
   }
 
-  async function processTranslationAudio(audioBlob) {
+  async function processTranslationAudio(capture) {
+    const audioBlob = capture?.audioBlob || null;
+    const durationMs = capture?.durationMs || 0;
+
     if (!audioBlob || audioBlob.size === 0) {
       setStatus({
         label: "沒有錄到聲音",
         message: "這次錄音沒有可用音訊，請確認麥克風權限後再試一次。",
+        isError: true
+      });
+      return;
+    }
+
+    if (durationMs < MIN_RECORDING_DURATION_MS || audioBlob.size < MIN_AUDIO_SIZE_BYTES) {
+      setStatus({
+        label: "錄音太短",
+        message: "這段錄音太短或太安靜，Whisper 容易亂判。請靠近麥克風並至少連續說 1 到 2 秒。",
         isError: true
       });
       return;
@@ -361,11 +400,23 @@ export default function App() {
     }
   }
 
-  async function processPracticeAudio(audioBlob) {
+  async function processPracticeAudio(capture) {
+    const audioBlob = capture?.audioBlob || null;
+    const durationMs = capture?.durationMs || 0;
+
     if (!audioBlob || audioBlob.size === 0) {
       setStatus({
         label: "沒有跟讀音訊",
         message: "這次跟讀錄音沒有可用音訊，請再試一次。",
+        isError: true
+      });
+      return;
+    }
+
+    if (durationMs < MIN_RECORDING_DURATION_MS || audioBlob.size < MIN_AUDIO_SIZE_BYTES) {
+      setStatus({
+        label: "跟讀太短",
+        message: "這段跟讀太短或太小聲，請再錄一次並把句子完整念完。",
         isError: true
       });
       return;
@@ -570,9 +621,9 @@ export default function App() {
           <p className="service-copy">
             {!serverStatus.checked
               ? "正在檢查服務狀態..."
-              : "請確認後端已啟動，而且 .env 包含 OPENAI_API_KEY、OPENAI_TRANSCRIPTION_MODEL、OPENAI_TEXT_MODEL。"}
+              : "請確認已設定 OPENAI_API_KEY、OPENAI_TRANSCRIPTION_MODEL、OPENAI_TEXT_MODEL；若部署在 Vercel，請到 Project Settings > Environment Variables 設定。"}
           </p>
-          <p className="service-copy">最方便的啟動方式是執行 npm run dev，它會同時啟動前端與後端。</p>
+          <p className="service-copy">本機開發可用 npm run dev；部署到 Vercel 時會直接使用 /api 下的 Serverless Functions。</p>
         </section>
       ) : null}
 
@@ -755,8 +806,15 @@ export default function App() {
   );
 }
 
-async function startCapture({ recorderRef, streamRef, chunksRef, setActive }) {
-  const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+async function startCapture({ recorderRef, streamRef, chunksRef, startedAtRef, setActive }) {
+  const stream = await navigator.mediaDevices.getUserMedia({
+    audio: {
+      channelCount: 1,
+      echoCancellation: true,
+      noiseSuppression: true,
+      autoGainControl: true
+    }
+  });
   const mimeType = getSupportedMimeType();
   const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
 
@@ -769,11 +827,12 @@ async function startCapture({ recorderRef, streamRef, chunksRef, setActive }) {
 
   recorderRef.current = recorder;
   streamRef.current = stream;
+  startedAtRef.current = Date.now();
   recorder.start();
   setActive(true);
 }
 
-function stopCapture({ recorderRef, streamRef, chunksRef }) {
+function stopCapture({ recorderRef, streamRef, chunksRef, startedAtRef }) {
   return new Promise((resolve, reject) => {
     const recorder = recorderRef.current;
     if (!recorder) {
@@ -784,13 +843,16 @@ function stopCapture({ recorderRef, streamRef, chunksRef }) {
     recorder.onstop = () => {
       const mimeType = recorder.mimeType || "audio/webm";
       const audioBlob = new Blob(chunksRef.current, { type: mimeType });
+      const durationMs = startedAtRef.current ? Date.now() - startedAtRef.current : 0;
       cleanupRecorder(recorderRef, streamRef);
+      startedAtRef.current = 0;
       chunksRef.current = [];
-      resolve(audioBlob);
+      resolve({ audioBlob, durationMs });
     };
 
     recorder.onerror = () => {
       cleanupRecorder(recorderRef, streamRef);
+      startedAtRef.current = 0;
       chunksRef.current = [];
       reject(new Error("錄音失敗，請再試一次。"));
     };
