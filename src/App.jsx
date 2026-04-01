@@ -1,7 +1,5 @@
 ﻿import { useEffect, useMemo, useRef, useState } from "react";
 
-const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-
 const LANGUAGE_OPTIONS = [
   { value: "zh-TW", label: "繁體中文" },
   { value: "en-US", label: "English" },
@@ -10,17 +8,17 @@ const LANGUAGE_OPTIONS = [
 ];
 
 const PLACEHOLDERS = {
-  translationIdle: "翻譯會顯示在這裡",
-  translationLoading: "正在翻譯中...",
-  translationError: "翻譯失敗，請再試一次",
-  translationEmpty: "目前沒有可用翻譯",
-  transcriptIdle: "開始錄音後，逐字稿會即時出現在這裡",
-  practiceIdle: "先播放翻譯，再開始跟讀練習"
+  translationIdle: "錄音完成後，翻譯會顯示在這裡。",
+  translationLoading: "Whisper 正在轉錄並翻譯中...",
+  translationError: "翻譯失敗，請再試一次。",
+  translationEmpty: "目前沒有可用翻譯。",
+  transcriptIdle: "開始錄音，停止後就會看到 Whisper 轉錄結果。",
+  practiceIdle: "先播放翻譯，再開始跟讀錄音。"
 };
 
 const DEFAULT_STATUS = {
   label: "準備完成",
-  message: "先選語言，按下開始錄音後直接說話即可。",
+  message: "先選語言，錄音結束後系統會把音訊送到 Whisper 轉錄。",
   isError: false
 };
 
@@ -29,7 +27,10 @@ const DEFAULT_SERVER_STATUS = {
   ok: false,
   server: "unknown",
   apiKeyConfigured: false,
-  modelConfigured: false,
+  transcriptionModelConfigured: false,
+  textModelConfigured: false,
+  transcriptionModel: null,
+  textModel: null,
   model: null
 };
 
@@ -37,37 +38,45 @@ function isUsableTranslation(text) {
   return text && !Object.values(PLACEHOLDERS).includes(text);
 }
 
+function getSupportedMimeType() {
+  if (!window.MediaRecorder) {
+    return "";
+  }
+
+  const candidates = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4", "audio/ogg;codecs=opus"];
+  return candidates.find((mimeType) => MediaRecorder.isTypeSupported(mimeType)) || "";
+}
+
 export default function App() {
-  const recognitionRef = useRef(null);
-  const practiceRecognitionRef = useRef(null);
+  const recordingRecorderRef = useRef(null);
+  const recordingStreamRef = useRef(null);
+  const recordingChunksRef = useRef([]);
+  const practiceRecorderRef = useRef(null);
+  const practiceStreamRef = useRef(null);
+  const practiceChunksRef = useRef([]);
   const requestCounterRef = useRef(0);
   const [availableVoices, setAvailableVoices] = useState([]);
 
   const [sourceLanguage, setSourceLanguage] = useState("zh-TW");
   const [targetLanguage, setTargetLanguage] = useState("en-US");
   const [isListening, setIsListening] = useState(false);
+  const [isTranscribing, setIsTranscribing] = useState(false);
   const [status, setStatus] = useState(DEFAULT_STATUS);
   const [finalizedTranscript, setFinalizedTranscript] = useState("");
-  const [interimTranscript, setInterimTranscript] = useState("");
   const [liveTranslation, setLiveTranslation] = useState(PLACEHOLDERS.translationIdle);
   const [transcriptHistory, setTranscriptHistory] = useState([]);
   const [translationHistory, setTranslationHistory] = useState([]);
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [speakingId, setSpeakingId] = useState(null);
   const [isPracticeListening, setIsPracticeListening] = useState(false);
+  const [isPracticeTranscribing, setIsPracticeTranscribing] = useState(false);
   const [practiceTranscript, setPracticeTranscript] = useState("");
-  const [practiceInterim, setPracticeInterim] = useState("");
   const [isEvaluating, setIsEvaluating] = useState(false);
   const [evaluation, setEvaluation] = useState(null);
   const [selectedVoice, setSelectedVoice] = useState("");
   const [speechRate, setSpeechRate] = useState(1);
   const [speechPitch, setSpeechPitch] = useState(1);
   const [serverStatus, setServerStatus] = useState(DEFAULT_SERVER_STATUS);
-
-  const combinedTranscript = useMemo(
-    () => [finalizedTranscript, interimTranscript].filter(Boolean).join(" ").trim(),
-    [finalizedTranscript, interimTranscript]
-  );
 
   const filteredVoices = useMemo(() => {
     const exact = availableVoices.filter((voice) => voice.lang === targetLanguage);
@@ -76,7 +85,8 @@ export default function App() {
   }, [availableVoices, targetLanguage]);
 
   const hasLiveTranslation = isUsableTranslation(liveTranslation);
-  const sessionReadyForPractice = hasLiveTranslation && !isListening;
+  const sessionReadyForPractice = hasLiveTranslation && !isListening && !isTranscribing;
+  const supportsAudioRecording = Boolean(navigator.mediaDevices?.getUserMedia && window.MediaRecorder);
 
   useEffect(() => {
     let cancelled = false;
@@ -91,7 +101,7 @@ export default function App() {
         }
 
         if (!response.ok) {
-          throw new Error("健康檢查失敗");
+          throw new Error("健康檢查失敗。");
         }
 
         setServerStatus({
@@ -99,7 +109,10 @@ export default function App() {
           ok: Boolean(payload.ok),
           server: payload.server || "online",
           apiKeyConfigured: Boolean(payload.apiKeyConfigured),
-          modelConfigured: Boolean(payload.modelConfigured),
+          transcriptionModelConfigured: Boolean(payload.transcriptionModelConfigured),
+          textModelConfigured: Boolean(payload.textModelConfigured),
+          transcriptionModel: payload.transcriptionModel || null,
+          textModel: payload.textModel || null,
           model: payload.model || null
         });
       } catch (error) {
@@ -112,12 +125,15 @@ export default function App() {
           ok: false,
           server: "offline",
           apiKeyConfigured: false,
-          modelConfigured: false,
+          transcriptionModelConfigured: false,
+          textModelConfigured: false,
+          transcriptionModel: null,
+          textModel: null,
           model: null
         });
         setStatus({
           label: "API 未連線",
-          message: "後端翻譯服務沒有啟動。請使用 `npm run dev`，或另外啟動 `npm run dev:server`。",
+          message: "後端服務尚未啟動。請執行 npm run dev 或 npm run dev:server。",
           isError: true
         });
       }
@@ -154,201 +170,24 @@ export default function App() {
   }, [filteredVoices, selectedVoice]);
 
   useEffect(() => {
-    if (!SpeechRecognition) {
+    if (!supportsAudioRecording) {
       setStatus({
         label: "瀏覽器不支援",
-        message: "這個功能需要 Web Speech API，建議使用最新版 Chrome 或 Edge。",
+        message: "這個版本需要 MediaRecorder 和麥克風權限，建議使用最新版 Chrome 或 Edge。",
         isError: true
       });
-      return undefined;
     }
+  }, [supportsAudioRecording]);
 
-    const recognition = new SpeechRecognition();
-    recognition.continuous = true;
-    recognition.interimResults = true;
-    recognition.lang = sourceLanguage;
-
-    recognition.onstart = () => {
-      setIsListening(true);
-      setStatus({
-        label: "錄音中",
-        message: "正在收音，你可以自然說話，系統會分段翻譯。",
-        isError: false
-      });
-    };
-
-    recognition.onend = () => {
-      setIsListening(false);
-      setStatus((current) =>
-        current.isError
-          ? current
-          : {
-              label: "已停止錄音",
-              message: "你可以重新開始錄音，或直接播放翻譯、做跟讀練習。",
-              isError: false
-            }
-      );
-    };
-
-    recognition.onerror = (event) => {
-      setIsListening(false);
-      setStatus({
-        label: "錄音失敗",
-        message: `語音辨識發生錯誤：${event.error}`,
-        isError: true
-      });
-    };
-
-    recognition.onresult = async (event) => {
-      let nextInterim = "";
-      const finalizedSegments = [];
-
-      for (let index = event.resultIndex; index < event.results.length; index += 1) {
-        const result = event.results[index];
-        const text = result[0].transcript.trim();
-
-        if (!text) {
-          continue;
-        }
-
-        if (result.isFinal) {
-          finalizedSegments.push(text);
-        } else {
-          nextInterim += `${text} `;
-        }
-      }
-
-      setInterimTranscript(nextInterim.trim());
-
-      if (finalizedSegments.length === 0) {
-        return;
-      }
-
-      const finalizedSegment = finalizedSegments.join(" ").trim();
-      setFinalizedTranscript((current) => [current, finalizedSegment].filter(Boolean).join(" ").trim());
-      setTranscriptHistory((current) => [finalizedSegment, ...current]);
-      setInterimTranscript("");
-      setLiveTranslation(PLACEHOLDERS.translationLoading);
-
-      const currentRequestId = ++requestCounterRef.current;
-
-      try {
-        const translatedText = await translateText({
-          text: finalizedSegment,
-          sourceLanguage,
-          targetLanguage
-        });
-
-        if (currentRequestId !== requestCounterRef.current) {
-          return;
-        }
-
-        const safeTranslation = translatedText || PLACEHOLDERS.translationEmpty;
-        setLiveTranslation(safeTranslation);
-        setTranslationHistory((current) => [
-          { id: `${Date.now()}-${currentRequestId}`, text: safeTranslation },
-          ...current
-        ]);
-        setStatus({
-          label: "翻譯完成",
-          message: "最新一句已翻好，現在可以直接播放，或開始跟讀。",
-          isError: false
-        });
-      } catch (error) {
-        setLiveTranslation(PLACEHOLDERS.translationError);
-        setStatus({
-          label: "翻譯失敗",
-          message: error.message,
-          isError: true
-        });
-      }
-    };
-
-    recognitionRef.current = recognition;
-
+  useEffect(() => {
     return () => {
+      cleanupRecorder(recordingRecorderRef, recordingStreamRef);
+      cleanupRecorder(practiceRecorderRef, practiceStreamRef);
       if (window.speechSynthesis) {
         window.speechSynthesis.cancel();
       }
-
-      recognition.onstart = null;
-      recognition.onend = null;
-      recognition.onerror = null;
-      recognition.onresult = null;
-      recognition.stop();
-      recognitionRef.current = null;
     };
-  }, [sourceLanguage, targetLanguage]);
-
-  useEffect(() => {
-    if (!SpeechRecognition) {
-      return undefined;
-    }
-
-    const practiceRecognition = new SpeechRecognition();
-    practiceRecognition.continuous = true;
-    practiceRecognition.interimResults = true;
-    practiceRecognition.lang = targetLanguage;
-
-    practiceRecognition.onstart = () => {
-      setIsPracticeListening(true);
-      setStatus({
-        label: "跟讀中",
-        message: "請照著翻譯內容念，完成後再按一次停止。",
-        isError: false
-      });
-    };
-
-    practiceRecognition.onend = () => {
-      setIsPracticeListening(false);
-    };
-
-    practiceRecognition.onerror = (event) => {
-      setIsPracticeListening(false);
-      setStatus({
-        label: "跟讀失敗",
-        message: `語音辨識發生錯誤：${event.error}`,
-        isError: true
-      });
-    };
-
-    practiceRecognition.onresult = (event) => {
-      let finalText = "";
-      let interimText = "";
-
-      for (let index = event.resultIndex; index < event.results.length; index += 1) {
-        const result = event.results[index];
-        const text = result[0].transcript.trim();
-
-        if (!text) {
-          continue;
-        }
-
-        if (result.isFinal) {
-          finalText += `${text} `;
-        } else {
-          interimText += `${text} `;
-        }
-      }
-
-      if (finalText.trim()) {
-        setPracticeTranscript((current) => [current, finalText.trim()].filter(Boolean).join(" ").trim());
-      }
-
-      setPracticeInterim(interimText.trim());
-    };
-
-    practiceRecognitionRef.current = practiceRecognition;
-
-    return () => {
-      practiceRecognition.onstart = null;
-      practiceRecognition.onend = null;
-      practiceRecognition.onerror = null;
-      practiceRecognition.onresult = null;
-      practiceRecognition.stop();
-      practiceRecognitionRef.current = null;
-    };
-  }, [targetLanguage]);
+  }, []);
 
   function stopSpeaking() {
     if (window.speechSynthesis) {
@@ -358,30 +197,30 @@ export default function App() {
     setSpeakingId(null);
   }
 
-  function stopAllRecognition() {
-    recognitionRef.current?.stop();
-    practiceRecognitionRef.current?.stop();
-  }
-
   function resetSession() {
     requestCounterRef.current = 0;
-    stopAllRecognition();
+    if (isListening) {
+      stopRecorder(recordingRecorderRef.current);
+    }
+    if (isPracticeListening) {
+      stopRecorder(practiceRecorderRef.current);
+    }
     stopSpeaking();
     setFinalizedTranscript("");
-    setInterimTranscript("");
     setTranscriptHistory([]);
     setTranslationHistory([]);
     setLiveTranslation(PLACEHOLDERS.translationIdle);
     setEvaluation(null);
     setIsEvaluating(false);
     setPracticeTranscript("");
-    setPracticeInterim("");
     setIsPracticeListening(false);
+    setIsTranscribing(false);
+    setIsPracticeTranscribing(false);
     setStatus(DEFAULT_STATUS);
   }
 
   function handleSwapLanguages() {
-    if (isListening || isPracticeListening) {
+    if (isListening || isPracticeListening || isTranscribing || isPracticeTranscribing) {
       return;
     }
 
@@ -390,65 +229,175 @@ export default function App() {
     resetSession();
   }
 
-  function handleToggleListening() {
-    const recognition = recognitionRef.current;
-
-    if (!recognition) {
+  async function handleToggleListening() {
+    if (!supportsAudioRecording) {
       return;
     }
 
     if (isListening) {
-      recognition.stop();
+      const audioBlob = await stopCapture({ recorderRef: recordingRecorderRef, streamRef: recordingStreamRef, chunksRef: recordingChunksRef });
+      setIsListening(false);
+      await processTranslationAudio(audioBlob);
       return;
     }
 
     resetSession();
-    recognition.lang = sourceLanguage;
 
     try {
-      recognition.start();
+      await startCapture({ recorderRef: recordingRecorderRef, streamRef: recordingStreamRef, chunksRef: recordingChunksRef, setActive: setIsListening });
+      setStatus({
+        label: "錄音中",
+        message: "請自然說話，結束後按停止送出給 Whisper。",
+        isError: false
+      });
     } catch (error) {
       setStatus({
         label: "無法開始錄音",
-        message: "錄音正在初始化或尚未完全停止，請稍等一下再試。",
+        message: error.message,
         isError: true
       });
     }
   }
 
-  function handleTogglePracticeListening() {
-    const recognition = practiceRecognitionRef.current;
-
-    if (!recognition) {
+  async function handleTogglePracticeListening() {
+    if (!supportsAudioRecording) {
       return;
     }
 
     if (!sessionReadyForPractice) {
       setStatus({
-        label: "還不能跟讀",
-        message: "請先完成一段翻譯，再開始跟讀練習。",
+        label: "目前無法跟讀",
+        message: "請先完成一段翻譯，再開始跟讀錄音。",
         isError: true
       });
       return;
     }
 
     if (isPracticeListening) {
-      recognition.stop();
+      const audioBlob = await stopCapture({ recorderRef: practiceRecorderRef, streamRef: practiceStreamRef, chunksRef: practiceChunksRef });
+      setIsPracticeListening(false);
+      await processPracticeAudio(audioBlob);
       return;
     }
 
     setPracticeTranscript("");
-    setPracticeInterim("");
+    setEvaluation(null);
 
     try {
-      recognition.lang = targetLanguage;
-      recognition.start();
+      await startCapture({ recorderRef: practiceRecorderRef, streamRef: practiceStreamRef, chunksRef: practiceChunksRef, setActive: setIsPracticeListening });
+      setStatus({
+        label: "跟讀錄音中",
+        message: "請跟著翻譯念，停止後會由 Whisper 轉成文字。",
+        isError: false
+      });
     } catch (error) {
       setStatus({
         label: "無法開始跟讀",
-        message: "跟讀辨識尚未準備好，請稍等一下再試。",
+        message: error.message,
         isError: true
       });
+    }
+  }
+
+  async function processTranslationAudio(audioBlob) {
+    if (!audioBlob || audioBlob.size === 0) {
+      setStatus({
+        label: "沒有錄到聲音",
+        message: "這次錄音沒有可用音訊，請確認麥克風權限後再試一次。",
+        isError: true
+      });
+      return;
+    }
+
+    const currentRequestId = ++requestCounterRef.current;
+    setIsTranscribing(true);
+    setLiveTranslation(PLACEHOLDERS.translationLoading);
+    setStatus({
+      label: "轉錄中",
+      message: "Whisper 正在把錄音轉成文字，接著會自動翻譯。",
+      isError: false
+    });
+
+    try {
+      const transcript = await transcribeAudio({ audioBlob, language: sourceLanguage });
+      if (currentRequestId !== requestCounterRef.current) {
+        return;
+      }
+
+      if (!transcript) {
+        throw new Error("Whisper 沒有辨識到足夠語音內容，請再錄一次。");
+      }
+
+      setFinalizedTranscript((current) => [current, transcript].filter(Boolean).join(" ").trim());
+      setTranscriptHistory((current) => [transcript, ...current]);
+
+      const translatedText = await translateText({
+        text: transcript,
+        sourceLanguage,
+        targetLanguage
+      });
+
+      if (currentRequestId !== requestCounterRef.current) {
+        return;
+      }
+
+      const safeTranslation = translatedText || PLACEHOLDERS.translationEmpty;
+      setLiveTranslation(safeTranslation);
+      setTranslationHistory((current) => [{ id: `${Date.now()}-${currentRequestId}`, text: safeTranslation }, ...current]);
+      setStatus({
+        label: "翻譯完成",
+        message: "Whisper 轉錄和翻譯都完成了，現在可以播放或開始跟讀。",
+        isError: false
+      });
+    } catch (error) {
+      setLiveTranslation(PLACEHOLDERS.translationError);
+      setStatus({
+        label: "處理失敗",
+        message: error.message,
+        isError: true
+      });
+    } finally {
+      setIsTranscribing(false);
+    }
+  }
+
+  async function processPracticeAudio(audioBlob) {
+    if (!audioBlob || audioBlob.size === 0) {
+      setStatus({
+        label: "沒有跟讀音訊",
+        message: "這次跟讀錄音沒有可用音訊，請再試一次。",
+        isError: true
+      });
+      return;
+    }
+
+    setIsPracticeTranscribing(true);
+    setStatus({
+      label: "跟讀轉錄中",
+      message: "Whisper 正在整理你的跟讀內容。",
+      isError: false
+    });
+
+    try {
+      const transcript = await transcribeAudio({ audioBlob, language: targetLanguage });
+      if (!transcript) {
+        throw new Error("Whisper 沒有辨識到跟讀語音，請再試一次。");
+      }
+
+      setPracticeTranscript(transcript);
+      setStatus({
+        label: "跟讀完成",
+        message: "已取得跟讀文字，現在可以直接送出評分。",
+        isError: false
+      });
+    } catch (error) {
+      setStatus({
+        label: "跟讀失敗",
+        message: error.message,
+        isError: true
+      });
+    } finally {
+      setIsPracticeTranscribing(false);
     }
   }
 
@@ -464,7 +413,7 @@ export default function App() {
     if (!practiceTranscript.trim()) {
       setStatus({
         label: "缺少跟讀內容",
-        message: "請先完成一次跟讀，再進行發音評分。",
+        message: "請先完成一次跟讀錄音，再進行發音評分。",
         isError: true
       });
       return;
@@ -483,7 +432,7 @@ export default function App() {
       setEvaluation(result);
       setStatus({
         label: "評分完成",
-        message: "你可以先看總分，再往下看具體建議。",
+        message: "可以先看總分，再往下看具體建議。",
         isError: false
       });
     } catch (error) {
@@ -539,17 +488,17 @@ export default function App() {
       <section className="hero">
         <div className="hero-copy">
           <p className="eyebrow">Voice Translation Studio</p>
-          <h1>語音翻譯與跟讀練習</h1>
+          <h1>Whisper 語音翻譯練習</h1>
           <p className="intro">
-            把常用操作集中在最上方，照著「錄音、播放、跟讀、評分」的順序走，不用在畫面裡來回找按鈕。
+            這個版本會先錄下音訊，再交給 Whisper 轉錄，接著完成翻譯和口說評分。
           </p>
         </div>
         <div className="hero-steps card">
-          <p className="steps-title">使用流程</p>
+          <p className="steps-title">流程</p>
           <ol className="steps-list">
-            <li>選擇語言並開始錄音</li>
-            <li>查看即時翻譯並播放</li>
-            <li>開始跟讀並送出評分</li>
+            <li>選擇語言並錄音</li>
+            <li>等待 Whisper 轉錄與翻譯</li>
+            <li>播放、跟讀、送出評分</li>
           </ol>
         </div>
       </section>
@@ -557,7 +506,7 @@ export default function App() {
       <section className="card command-bar">
         <div className="field-group">
           <label>
-            你要說的語言
+            原始語言
             <select value={sourceLanguage} onChange={(event) => setSourceLanguage(event.target.value)}>
               {LANGUAGE_OPTIONS.map((option) => (
                 <option key={option.value} value={option.value}>
@@ -571,14 +520,14 @@ export default function App() {
             type="button"
             className="swap-button"
             onClick={handleSwapLanguages}
-            disabled={isListening || isPracticeListening}
+            disabled={isListening || isPracticeListening || isTranscribing || isPracticeTranscribing}
             aria-label="交換語言"
           >
             ⇄
           </button>
 
           <label>
-            想翻成的語言
+            目標語言
             <select value={targetLanguage} onChange={(event) => setTargetLanguage(event.target.value)}>
               {LANGUAGE_OPTIONS.map((option) => (
                 <option key={option.value} value={option.value}>
@@ -594,12 +543,12 @@ export default function App() {
             type="button"
             className={`primary-button${isListening ? " active" : ""}`}
             onClick={handleToggleListening}
-            disabled={!SpeechRecognition}
+            disabled={!supportsAudioRecording || isTranscribing || isPracticeListening || isPracticeTranscribing}
           >
-            {isListening ? "停止錄音" : "開始錄音"}
+            {isListening ? "停止並送出" : "開始錄音"}
           </button>
           <button type="button" className="secondary-button" onClick={resetSession}>
-            清空這次內容
+            清空本次內容
           </button>
         </div>
       </section>
@@ -614,18 +563,16 @@ export default function App() {
           <div className="panel-header compact">
             <div>
               <p className="section-kicker">Service Check</p>
-              <h2>翻譯服務目前不可用</h2>
+              <h2>需要先完成後端設定</h2>
             </div>
             <span>{serverStatus.checked ? serverStatus.server : "checking"}</span>
           </div>
           <p className="service-copy">
             {!serverStatus.checked
-              ? "正在檢查翻譯服務狀態..."
-              : "請先確認本機 API server 有啟動，且 `.env` 內的 `OPENAI_API_KEY` 與 `OPENAI_MODEL` 都有設定。"}
+              ? "正在檢查服務狀態..."
+              : "請確認後端已啟動，而且 .env 包含 OPENAI_API_KEY、OPENAI_TRANSCRIPTION_MODEL、OPENAI_TEXT_MODEL。"}
           </p>
-          <p className="service-copy">
-            建議直接執行 `npm run dev`。這個指令現在會同時啟動前端和後端，不需要再分開開兩個視窗。
-          </p>
+          <p className="service-copy">最方便的啟動方式是執行 npm run dev，它會同時啟動前端與後端。</p>
         </section>
       ) : null}
 
@@ -636,11 +583,11 @@ export default function App() {
               <div className="panel-header">
                 <div>
                   <p className="section-kicker">Step 1</p>
-                  <h2>原文逐字稿</h2>
+                  <h2>Whisper 逐字稿</h2>
                 </div>
-                <span>{isListening ? "正在更新" : "等待輸入"}</span>
+                <span>{isListening ? "錄音中" : isTranscribing ? "轉錄中" : "待機"}</span>
               </div>
-              <div className="live-block">{combinedTranscript || PLACEHOLDERS.transcriptIdle}</div>
+              <div className="live-block">{finalizedTranscript || PLACEHOLDERS.transcriptIdle}</div>
               <div className="history">
                 {transcriptHistory.map((item, index) => (
                   <p className="history-item" key={`${item}-${index}`}>
@@ -654,7 +601,7 @@ export default function App() {
               <div className="panel-header">
                 <div>
                   <p className="section-kicker">Step 2</p>
-                  <h2>即時翻譯</h2>
+                  <h2>翻譯結果</h2>
                 </div>
                 <span>{targetLanguage}</span>
               </div>
@@ -673,9 +620,6 @@ export default function App() {
                 {translationHistory.map((item) => (
                   <div className="history-row" key={item.id}>
                     <p className="history-item">{item.text}</p>
-                    <button type="button" className="mini-play-button" onClick={() => speakText(item.text, item.id)}>
-                      {isSpeaking && speakingId === item.id ? "停止" : "播放"}
-                    </button>
                   </div>
                 ))}
               </div>
@@ -686,22 +630,22 @@ export default function App() {
             <div className="panel-header">
               <div>
                 <p className="section-kicker">Step 3</p>
-                <h2>跟讀練習</h2>
+                <h2>跟讀錄音</h2>
               </div>
               <button
                 type="button"
                 className="utility-button"
                 onClick={handleTogglePracticeListening}
-                disabled={!sessionReadyForPractice}
+                disabled={!sessionReadyForPractice || isPracticeTranscribing || isTranscribing}
               >
                 {isPracticeListening ? "停止跟讀" : "開始跟讀"}
               </button>
             </div>
             <p className="practice-hint">
-              先播放翻譯熟悉語調，再按開始跟讀。系統會把你剛剛說的內容記下來，方便接著做評分。
+              先播放翻譯，再跟著念，停止錄音後 Whisper 會幫你轉成文字。
             </p>
             <div className="live-block practice-block">
-              {practiceTranscript || practiceInterim || PLACEHOLDERS.practiceIdle}
+              {practiceTranscript || (isPracticeTranscribing ? "Whisper 正在轉錄你的跟讀音訊..." : PLACEHOLDERS.practiceIdle)}
             </div>
           </section>
         </div>
@@ -713,7 +657,7 @@ export default function App() {
                 <p className="section-kicker">Playback</p>
                 <h2>播放設定</h2>
               </div>
-              <span>{filteredVoices.length ? `${filteredVoices.length} 個語音` : "無可用語音"}</span>
+              <span>{filteredVoices.length ? `${filteredVoices.length} 個語音` : "沒有可用語音"}</span>
             </div>
             <div className="speech-grid">
               <label>
@@ -763,9 +707,14 @@ export default function App() {
             <div className="panel-header">
               <div>
                 <p className="section-kicker">Step 4</p>
-                <h2>發音評分</h2>
+                <h2>口說評分</h2>
               </div>
-              <button type="button" className="utility-button" onClick={handleEvaluateSpeech} disabled={isEvaluating}>
+              <button
+                type="button"
+                className="utility-button"
+                onClick={handleEvaluateSpeech}
+                disabled={isEvaluating || isPracticeListening || isPracticeTranscribing}
+              >
                 {isEvaluating ? "評分中..." : "開始評分"}
               </button>
             </div>
@@ -776,15 +725,15 @@ export default function App() {
                   <strong className="score-value">{evaluation.overallScore ?? "--"}</strong>
                 </div>
                 <div className="evaluation-list">
-                  <p><strong>IELTS 估計：</strong>{evaluation.ieltsBand || "--"}</p>
-                  <p><strong>TOEIC Speaking 估計：</strong>{evaluation.toeicEstimate || "--"}</p>
-                  <p><strong>流暢度：</strong>{evaluation.fluency || "--"}</p>
-                  <p><strong>清晰度：</strong>{evaluation.clarity || "--"}</p>
-                  <p><strong>完整度：</strong>{evaluation.completeness || "--"}</p>
-                  <p><strong>字彙：</strong>{evaluation.vocabulary || "--"}</p>
-                  <p><strong>文法：</strong>{evaluation.grammar || "--"}</p>
-                  <p><strong>發音提醒：</strong>{evaluation.pronunciationNote || "--"}</p>
-                  <p><strong>整體總結：</strong>{evaluation.summary || "--"}</p>
+                  <p><strong>IELTS 估計：</strong> {evaluation.ieltsBand || "--"}</p>
+                  <p><strong>TOEIC 估計：</strong> {evaluation.toeicEstimate || "--"}</p>
+                  <p><strong>流暢度：</strong> {evaluation.fluency || "--"}</p>
+                  <p><strong>清晰度：</strong> {evaluation.clarity || "--"}</p>
+                  <p><strong>完整度：</strong> {evaluation.completeness || "--"}</p>
+                  <p><strong>字彙：</strong> {evaluation.vocabulary || "--"}</p>
+                  <p><strong>文法：</strong> {evaluation.grammar || "--"}</p>
+                  <p><strong>發音提醒：</strong> {evaluation.pronunciationNote || "--"}</p>
+                  <p><strong>總結：</strong> {evaluation.summary || "--"}</p>
                 </div>
                 <div className="tips-block">
                   {(evaluation.suggestions || []).map((item, index) => (
@@ -796,7 +745,7 @@ export default function App() {
               </div>
             ) : (
               <p className="empty-evaluation">
-                完成跟讀後按下開始評分，這裡會顯示總分、能力估計和可直接練習的修正建議。
+                完成一次跟讀後按下開始評分，這裡會顯示總分與可直接練習的建議。
               </p>
             )}
           </section>
@@ -804,6 +753,104 @@ export default function App() {
       </section>
     </main>
   );
+}
+
+async function startCapture({ recorderRef, streamRef, chunksRef, setActive }) {
+  const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  const mimeType = getSupportedMimeType();
+  const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
+
+  chunksRef.current = [];
+  recorder.ondataavailable = (event) => {
+    if (event.data && event.data.size > 0) {
+      chunksRef.current.push(event.data);
+    }
+  };
+
+  recorderRef.current = recorder;
+  streamRef.current = stream;
+  recorder.start();
+  setActive(true);
+}
+
+function stopCapture({ recorderRef, streamRef, chunksRef }) {
+  return new Promise((resolve, reject) => {
+    const recorder = recorderRef.current;
+    if (!recorder) {
+      resolve(null);
+      return;
+    }
+
+    recorder.onstop = () => {
+      const mimeType = recorder.mimeType || "audio/webm";
+      const audioBlob = new Blob(chunksRef.current, { type: mimeType });
+      cleanupRecorder(recorderRef, streamRef);
+      chunksRef.current = [];
+      resolve(audioBlob);
+    };
+
+    recorder.onerror = () => {
+      cleanupRecorder(recorderRef, streamRef);
+      chunksRef.current = [];
+      reject(new Error("錄音失敗，請再試一次。"));
+    };
+
+    stopRecorder(recorder);
+  });
+}
+
+function stopRecorder(recorder) {
+  if (recorder && recorder.state !== "inactive") {
+    recorder.stop();
+  }
+}
+
+function cleanupRecorder(recorderRef, streamRef) {
+  const recorder = recorderRef.current;
+  if (recorder) {
+    recorder.ondataavailable = null;
+    recorder.onstop = null;
+    recorder.onerror = null;
+  }
+
+  const stream = streamRef.current;
+  if (stream) {
+    for (const track of stream.getTracks()) {
+      track.stop();
+    }
+  }
+
+  recorderRef.current = null;
+  streamRef.current = null;
+}
+
+async function transcribeAudio({ audioBlob, language }) {
+  const audioBase64 = await blobToBase64(audioBlob);
+  let response;
+
+  try {
+    response = await fetch("/api/transcribe", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        audioBase64,
+        mimeType: audioBlob.type || "audio/webm",
+        language
+      })
+    });
+  } catch (error) {
+    throw new Error("無法連到 Whisper 服務，請先確認後端已啟動。");
+  }
+
+  const payload = await readJsonSafely(response);
+  if (!response.ok) {
+    const detail = typeof payload.detail === "string" ? payload.detail : payload.detail?.error?.message || payload.error;
+    throw new Error(detail || "Whisper 轉錄服務暫時不可用。");
+  }
+
+  return payload.transcript || "";
 }
 
 async function translateText({ text, sourceLanguage, targetLanguage }) {
@@ -822,33 +869,16 @@ async function translateText({ text, sourceLanguage, targetLanguage }) {
       })
     });
   } catch (error) {
-    throw new Error("無法連到翻譯服務。請確認後端已啟動，再試一次。");
+    throw new Error("無法連到翻譯服務，請先確認後端已啟動。");
   }
 
   const payload = await readJsonSafely(response);
   if (!response.ok) {
-    const detail =
-      typeof payload.detail === "string"
-        ? payload.detail
-        : payload.detail?.error?.message || payload.error;
-
-    throw new Error(detail || "翻譯服務暫時無法使用，請稍後再試。");
+    const detail = typeof payload.detail === "string" ? payload.detail : payload.detail?.error?.message || payload.error;
+    throw new Error(detail || "翻譯服務暫時不可用。");
   }
 
   return payload.translatedText || "";
-}
-
-async function readJsonSafely(response) {
-  const raw = await response.text();
-  if (!raw) {
-    return {};
-  }
-
-  try {
-    return JSON.parse(raw);
-  } catch (error) {
-    throw new Error(`伺服器回傳了無法解析的 JSON，HTTP ${response.status}。請確認 API 是否正常啟動。`);
-  }
 }
 
 async function evaluateSpeech({ transcript, sourceLanguage, referenceText }) {
@@ -867,18 +897,42 @@ async function evaluateSpeech({ transcript, sourceLanguage, referenceText }) {
       })
     });
   } catch (error) {
-    throw new Error("無法連到評分服務。請確認後端已啟動，再試一次。");
+    throw new Error("無法連到評分服務，請先確認後端已啟動。");
   }
 
   const payload = await readJsonSafely(response);
   if (!response.ok) {
-    const detail =
-      typeof payload.detail === "string"
-        ? payload.detail
-        : payload.detail?.error?.message || payload.error;
-
-    throw new Error(detail || "發音評分暫時失敗，請稍後再試。");
+    const detail = typeof payload.detail === "string" ? payload.detail : payload.detail?.error?.message || payload.error;
+    throw new Error(detail || "口說評分服務暫時不可用。");
   }
 
   return payload.evaluation || null;
 }
+
+async function blobToBase64(blob) {
+  const arrayBuffer = await blob.arrayBuffer();
+  const bytes = new Uint8Array(arrayBuffer);
+  let binary = "";
+  const chunkSize = 32_768;
+
+  for (let index = 0; index < bytes.length; index += chunkSize) {
+    const chunk = bytes.subarray(index, index + chunkSize);
+    binary += String.fromCharCode(...chunk);
+  }
+
+  return window.btoa(binary);
+}
+
+async function readJsonSafely(response) {
+  const raw = await response.text();
+  if (!raw) {
+    return {};
+  }
+
+  try {
+    return JSON.parse(raw);
+  } catch (error) {
+    throw new Error(`伺服器回傳了無法解析的 JSON，HTTP ${response.status}。`);
+  }
+}
+

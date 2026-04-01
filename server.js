@@ -4,7 +4,7 @@ const path = require("path");
 
 loadEnv(path.join(__dirname, ".env"));
 
-const { getHealthStatus, translateText, evaluateSpeech } = require("./lib/openai");
+const { getHealthStatus, transcribeAudio, translateText, evaluateSpeech } = require("./lib/openai");
 
 const PORT = Number(process.env.PORT || 3000);
 const DIST_DIR = path.join(__dirname, "dist");
@@ -20,6 +20,11 @@ const server = http.createServer(async (req, res) => {
   try {
     if (req.method === "GET" && req.url === "/api/health") {
       sendJson(res, 200, getHealthStatus());
+      return;
+    }
+
+    if (req.method === "POST" && req.url === "/api/transcribe") {
+      await handleTranscribe(req, res);
       return;
     }
 
@@ -51,6 +56,17 @@ const server = http.createServer(async (req, res) => {
 server.listen(PORT, () => {
   console.log(`Server is running at http://localhost:${PORT}`);
 });
+
+async function handleTranscribe(req, res) {
+  const body = await readJson(req);
+  const result = await transcribeAudio({
+    audioBase64: typeof body.audioBase64 === "string" ? body.audioBase64 : "",
+    mimeType: typeof body.mimeType === "string" ? body.mimeType : "audio/webm",
+    language: typeof body.language === "string" ? body.language : ""
+  });
+
+  sendJson(res, result.status, result.body);
+}
 
 async function handleTranslate(req, res) {
   const body = await readJson(req);
@@ -122,7 +138,7 @@ function readJson(req) {
 
     req.on("data", (chunk) => {
       raw += chunk;
-      if (raw.length > 1_000_000) {
+      if (raw.length > 10_000_000) {
         reject(new Error("Request body too large"));
       }
     });
